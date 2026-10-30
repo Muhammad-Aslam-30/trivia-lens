@@ -108,6 +108,8 @@ button,input,select{ font:inherit; color:inherit; }
 .conf{ display:inline-block; margin-top:.6rem; padding:.15rem .6rem; border-radius:999px;
        border:1.5px solid var(--gold-ink); font-size:.8rem; font-weight:600; }
 .conf[hidden]{ display:none; }
+.by{ display:block; margin-top:.45rem; font-size:.75rem; color:var(--gold-muted); }
+.by:empty{ display:none; }
 
 /* ---------- Setup / settings sheet ---------- */
 #setup{ position:fixed; inset:0; overflow-y:auto; background:var(--page); z-index:5;
@@ -168,10 +170,12 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
     <label class="field"><span>Model</span>
       <input id="model" list="models" autocapitalize="off" spellcheck="false">
       <datalist id="models">
+        <option value="auto">Fastest first, then the others</option>
         <option value="gemini-flash-lite-latest">Fastest, most free requests</option>
         <option value="gemini-flash-latest">Smarter, slower</option>
+        <option value="gemini-pro-latest">Smartest, slowest</option>
       </datalist>
-      <small>Flash-Lite is quickest. Switch to gemini-flash-latest if answers are often wrong.</small>
+      <small>“auto” uses every model your key can use, fastest first (Flash-Lite, then Flash, then Pro). When one hits its limit or is busy, the next one answers. Name a model to try it first.</small>
     </label>
 
     <div class="row">
@@ -223,6 +227,7 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
     <p id="a" class="a"></p>
     <p id="why" class="why"></p>
     <span id="conf" class="conf" hidden></span>
+    <small id="by" class="by"></small>
   </section>
 </main>
 
@@ -235,7 +240,7 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
     setupMsg: $('#setup-msg'), go: $('#go'), stopFromSheet: $('#stop-from-sheet'),
     status: $('#status'), statusText: $('#status-text'), settingsBtn: $('#settings-btn'), stopBtn: $('#stop-btn'),
     zoomWrap: $('#zoom-wrap'), zoom: $('#zoom'),
-    card: $('#card'), q: $('#q'), a: $('#a'), why: $('#why'), conf: $('#conf')
+    card: $('#card'), q: $('#q'), a: $('#a'), why: $('#why'), conf: $('#conf'), by: $('#by')
   };
 
   // ---------- Safe storage ----------
@@ -247,12 +252,13 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
 
   // ---------- Settings ----------
   const SENS = { low: { change: 16, still: 8 }, normal: { change: 10, still: 5 }, high: { change: 6, still: 4 } };
-  const settings = { key: '', model: 'gemini-flash-lite-latest', gap: 6, sens: 'normal', speak: true };
+  const settings = { key: '', model: 'auto', gap: 6, sens: 'normal', speak: true };
 
   function loadSettings(){
     const savedKey = store.get('tl.key');
     if (savedKey) { settings.key = savedKey; el.remember.checked = true; }
-    settings.model = store.get('tl.model') || settings.model;
+    const savedModel = store.get('tl.model');
+    settings.model = savedModel && savedModel !== 'gemini-flash-lite-latest' ? savedModel : settings.model;   // the old default becomes "auto"
     settings.gap = Number(store.get('tl.gap')) || settings.gap;
     settings.sens = store.get('tl.sens') || settings.sens;
     const sp = store.get('tl.speak'); settings.speak = sp === null ? true : sp === '1';
@@ -261,7 +267,7 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
   }
   function readForm(){
     settings.key = el.key.value.trim();
-    settings.model = (el.model.value.trim() || 'gemini-flash-lite-latest').replace(/^models\//, '');
+    settings.model = (el.model.value.trim() || 'auto').replace(/^models\//, '');
     settings.gap = Math.min(60, Math.max(2, Number(el.gap.value) || 6));
     settings.sens = SENS[el.sens.value] ? el.sens.value : 'normal';
     settings.speak = el.speak.checked;
@@ -366,45 +372,125 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
     return 30;
   }
 
+  // ---------- Models: fastest first; when one is limited or busy, the next one answers ----------
+  const BASE = 'https://generativelanguage.googleapis.com/v1beta';
+  const FALLBACK = ['gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-pro-latest'];
+  const verOf = (n) => parseFloat((n.match(/gemini-(\d+(\.\d+)?)/) || [0, 0])[1]);
+  const tierOf = (n) => /flash-lite/.test(n) ? 0 : /flash/.test(n) ? 1 : 2;   // Flash-Lite, then Flash, then Pro
+  function rankModels(names){
+    return names
+      .filter((n) => /^gemini/.test(n) && !/(image|tts|live|audio|embed|thinking|exp|-8b|robotics|computer|native|transcribe|translate|research)/.test(n))
+      .sort((x, y) => tierOf(x) - tierOf(y)
+        || (/-latest$/.test(y) ? 1 : 0) - (/-latest$/.test(x) ? 1 : 0)   // "-latest" points at Google's newest stable one
+        || verOf(y) - verOf(x)
+        || (/preview/.test(x) ? 1 : 0) - (/preview/.test(y) ? 1 : 0)
+        || x.length - y.length);
+  }
+  const M = { key: '', list: [] };
+  const noThink = {};   // models that refused the "think briefly" setting
+  // a limited or busy model rests until it can be used again; kept on the phone so a restart doesn't retry it
+  const rest = (() => { try { const o = JSON.parse(store.get('tl.rest') || '{}'), now = Date.now(); Object.keys(o).forEach((k) => { if (!(o[k] > now)) delete o[k]; }); return o; } catch (e) { return {}; } })();
+  function restModel(model, ms){
+    rest[model] = Math.max(rest[model] || 0, Date.now() + ms);
+    store.set('tl.rest', JSON.stringify(rest));
+  }
+
+  class KeyError extends Error {}
+  class NetError extends Error {}
+  const keyRejected = (status, msg) => status === 401 || status === 403 || (status === 400 && /api key/i.test(msg));
+
+  // ask Google which models this key can use (names change over time); the list above is used if that fails
+  async function loadModels(){
+    if (M.key === settings.key && M.list.length) return;
+    try {
+      const res = await fetch(BASE + '/models?pageSize=200', { headers: { 'x-goog-api-key': settings.key } });
+      const data = await res.json().catch(() => ({}));
+      if (keyRejected(res.status, (data.error && data.error.message) || '')) throw new KeyError((data.error && data.error.message) || '');
+      const names = (data.models || []).filter((m) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m) => m.name.replace(/^models\//, ''));
+      const list = rankModels(names);
+      if (list.length) { M.key = settings.key; M.list = list; return; }
+    } catch (e) { if (e instanceof KeyError) throw e; }
+    M.list = FALLBACK.slice(); M.key = '';
+  }
+  function modelOrder(){
+    const now = Date.now(), pref = settings.model === 'auto' ? null : settings.model;
+    return [pref, ...M.list].filter((m, i, a) => m && a.indexOf(m) === i && !(rest[m] > now));
+  }
+
+  // answers come quicker with little or no thinking: Gemini 3 takes a level, 2.5 a token budget (Pro can't go to 0)
+  function thinking(model){
+    if (verOf(model) >= 3) return { thinkingLevel: 'low' };
+    return { thinkingBudget: /pro/.test(model) ? 128 : 0 };
+  }
+
+  // one model: { data, model } when it answered, null when it is limited / busy (it rests), throws on key or network problems
+  async function tryModel(model, image){
+    for (let think = !noThink[model]; ; think = false) {
+      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 12000);
+      let res, data;
+      try {
+        res = await fetch(BASE + '/models/' + encodeURIComponent(model) + ':generateContent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': settings.key },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [ { text: PROMPT }, { inline_data: { mime_type: 'image/jpeg', data: image } } ] }],
+            generationConfig: Object.assign({ temperature: 0.2, responseMimeType: 'application/json' }, think ? { thinkingConfig: thinking(model) } : {})
+          }),
+          signal: ctl.signal
+        });
+        data = await res.json().catch(() => ({}));
+      } catch (e) {
+        if (!ctl.signal.aborted) throw new NetError();
+        restModel(model, 120000); S.problem = 'slow';   // too slow right now: let the next model answer
+        return null;
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (res.ok) return { data, model };
+      const msg = (data.error && data.error.message) || '';
+      if (keyRejected(res.status, msg)) throw new KeyError(msg);
+      if (res.status === 400 && think) { noThink[model] = true; continue; }
+      if (res.status === 429) {
+        // "limit: 0" = not free for this key at all; a daily limit = rest for hours; otherwise Google says how long
+        const info = JSON.stringify(data.error || {}), wait = retrySeconds(data) * 1000;
+        restModel(model, /limit: 0\b/.test(info) ? 6 * 3600000 : /PerDay/i.test(info) ? Math.max(wait, 3600000) : wait);
+        S.problem = 'limit';
+        return null;
+      }
+      restModel(model, res.status === 404 || res.status === 400 ? 3600000 : 60000);   // unknown or unusable model, or Google is busy
+      S.problem = 'error ' + res.status;
+      return null;
+    }
+  }
+
   async function ask(sig){
     S.busy = true;
     S.lastCallAt = Date.now();
+    S.problem = '';
     setStatus('busy', 'Reading the question');
-    let data = {};
+    const image = captureJpeg();   // every model sees the same frame
     try {
-      const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(settings.model) + ':generateContent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': settings.key },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [ { text: PROMPT }, { inline_data: { mime_type: 'image/jpeg', data: captureJpeg() } } ] }],
-          generationConfig: { temperature: 0.2, responseMimeType: 'application/json' }
-        })
-      });
-      data = await res.json().catch(() => ({}));
+      await loadModels();
+      const order = modelOrder();
+      let hit = null;
+      for (let i = 0; i < order.length && !hit && S.running; i++) {
+        if (i) setStatus('busy', 'Trying model ' + (i + 1) + ' of ' + order.length);
+        hit = await tryModel(order[i], image);
+      }
+      if (!S.running) return;
 
-      if (!res.ok) {
-        const msg = (data.error && data.error.message) || '';
-        if (res.status === 429) {
-          const wait = retrySeconds(data);
-          S.holdUntil = Date.now() + wait * 1000;
-          setStatus('wait', 'Free-tier limit hit. Resuming in ' + wait + ' s');
-          return;
-        }
-        if (res.status === 400 && /api key/i.test(msg) || res.status === 401 || res.status === 403) {
-          stop(); openSheet('Gemini rejected the API key. Paste a valid key from Google AI Studio, then start again.');
-          return;
-        }
-        if (res.status === 404) {
-          stop(); openSheet('Gemini doesn’t recognise the model “' + settings.model + '”. Pick one from the Model list, then start again.');
-          return;
-        }
-        S.holdUntil = Date.now() + 5000;
-        setStatus('err', 'Gemini error ' + res.status + '. Retrying shortly');
+      if (!hit) {
+        const next = Math.min(...[settings.model, ...M.list].map((m) => rest[m] || Infinity));
+        S.holdUntil = isFinite(next) ? Math.max(next, Date.now() + 5000) : Date.now() + 30000;
+        const secs = Math.ceil((S.holdUntil - Date.now()) / 1000);
+        setStatus(S.problem === 'limit' || !order.length ? 'wait' : 'err',
+          (S.problem === 'limit' || !order.length ? 'Every model is at its limit' : 'Gemini is busy') + '. Resuming in ' + (secs > 90 ? Math.ceil(secs / 60) + ' min' : secs + ' s'));
         return;
       }
 
-      const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
-      const out = parseJson(parts.map((p) => p.text || '').join(''));
+      const parts = (hit.data.candidates && hit.data.candidates[0] && hit.data.candidates[0].content && hit.data.candidates[0].content.parts) || [];
+      const out = parseJson(parts.filter((p) => !p.thought).map((p) => p.text || '').join(''));
       S.sentSig = sig;
 
       if (!out || !out.has_question || !out.answer) { setStatus('live', 'No question in view'); return; }
@@ -412,9 +498,13 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
       const key = norm(out.question);
       if (key && key === S.lastQuestion) { setStatus('live', 'Same question'); return; }
       S.lastQuestion = key;
-      showAnswer(out);
+      showAnswer(out, hit.model);
       setStatus('live', 'Watching for the next question');
     } catch (e) {
+      if (e instanceof KeyError) {
+        stop(); openSheet('Gemini rejected the API key' + (e.message ? ' (' + e.message + ')' : '') + '. Paste a valid key from Google AI Studio, then start again.');
+        return;
+      }
       S.holdUntil = Date.now() + 5000;
       setStatus('err', 'Can’t reach Gemini. Check the connection');
     } finally {
@@ -422,13 +512,14 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
     }
   }
 
-  function showAnswer(out){
+  function showAnswer(out, model){
     el.q.textContent = out.question || '';
     el.a.textContent = out.answer;
     el.why.textContent = out.explanation || '';
     const c = String(out.confidence || '').toLowerCase();
     el.conf.hidden = !c;
     el.conf.textContent = c === 'high' ? 'Confident' : c === 'medium' ? 'Fairly sure' : c ? 'Not sure' : '';
+    el.by.textContent = model ? 'by ' + model : '';
     el.card.classList.remove('fresh'); void el.card.offsetWidth; el.card.classList.add('fresh');
     speak(String(out.answer) + (c === 'low' ? '. Not sure about this one.' : ''));
   }
