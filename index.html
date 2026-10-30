@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14173A">
+<title>Trivia Lens</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💡</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap" rel="stylesheet">
+<style>
+:root{
+  color-scheme: light;
+  --page:#F5F4FB; --surface:#FFFFFF; --text:#14173A; --muted:#565A82; --line:#D6D4EA;
+  --field:#FFFFFF; --focus:#5146D8;
+  --overlay:rgba(20,23,58,.72); --overlay-text:#F3F2FF;
+  --gold:#F4BC34; --gold-ink:#231A00; --gold-muted:#5C4500;
+  --live:#3FD69A; --busy:#F4BC34; --wait:#FF9A4D; --err:#FF5A67;
+  --font:"Bricolage Grotesque", ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top, 0px);
+  padding-bottom:env(safe-area-inset-bottom, 0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --page:#0F1230; --surface:#1A1E46; --text:#F3F2FF; --muted:#A8A7D4; --line:#30356C;
+    --field:#12153A; --focus:#9D96FF;
+    --overlay:rgba(10,12,34,.72); --overlay-text:#F3F2FF;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --page:#0F1230; --surface:#1A1E46; --text:#F3F2FF; --muted:#A8A7D4; --line:#30356C;
+  --field:#12153A; --focus:#9D96FF;
+  --overlay:rgba(10,12,34,.72); --overlay-text:#F3F2FF;
+}
+*,*::before,*::after{ box-sizing:inherit; }
+html{ height:100%; scroll-padding-top:env(safe-area-inset-top, 0px); }
+body{ height:100%; margin:0; background:var(--page); color:var(--text); font-family:var(--font); -webkit-font-smoothing:antialiased; }
+button,input,select{ font:inherit; color:inherit; }
+:focus-visible{ outline:3px solid var(--focus); outline-offset:2px; }
+
+/* ---------- Camera stage ---------- */
+#stage{ position:fixed; inset:0; background:#000; overflow:hidden; }
+#stage[hidden]{ display:none; }
+#cam{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+
+.bar{
+  position:absolute; top:0; left:0; right:0;
+  padding:calc(env(safe-area-inset-top, 0px) + .75rem) 1rem .75rem;
+  display:flex; align-items:center; justify-content:space-between; gap:.75rem;
+}
+.status{
+  display:flex; align-items:center; gap:.55rem; min-width:0;
+  padding:.5rem .85rem; border-radius:999px;
+  background:var(--overlay); color:var(--overlay-text);
+  backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+  font-size:.95rem; font-weight:600;
+}
+.status span{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.dot{ width:.7rem; height:.7rem; border-radius:50%; flex:none; background:var(--live); }
+.status[data-kind="busy"] .dot{ background:var(--busy); animation:pulse 1s ease-in-out infinite; }
+.status[data-kind="wait"] .dot{ background:var(--wait); }
+.status[data-kind="err"] .dot{ background:var(--err); }
+.status[data-kind="still"] .dot{ background:var(--overlay-text); opacity:.5; }
+@keyframes pulse{ 50%{ transform:scale(.6); opacity:.6; } }
+
+.bar-actions{ display:flex; gap:.5rem; flex:none; }
+.pill-btn{
+  border:0; border-radius:999px; padding:.55rem .95rem; min-height:2.6rem;
+  background:var(--overlay); color:var(--overlay-text); font-weight:600;
+  backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); cursor:pointer;
+  display:inline-flex; align-items:center; gap:.4rem;
+}
+.pill-btn svg{ width:1.2rem; height:1.2rem; }
+
+.zoom{
+  position:absolute; left:1rem; right:1rem; top:calc(env(safe-area-inset-top, 0px) + 4.4rem);
+  display:flex; align-items:center; gap:.75rem;
+  padding:.45rem .9rem; border-radius:999px; max-width:22rem;
+  background:var(--overlay); color:var(--overlay-text); font-size:.9rem; font-weight:600;
+  backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+}
+.zoom[hidden]{ display:none; }
+.zoom input{ flex:1; accent-color:var(--gold); }
+
+/* The answer cue card: the one loud thing on screen */
+.card{
+  position:absolute; left:.75rem; right:.75rem; bottom:calc(env(safe-area-inset-bottom, 0px) + .75rem);
+  max-width:40rem; margin:0 auto;
+  background:var(--gold); color:var(--gold-ink);
+  border-radius:1.4rem .4rem 1.4rem 1.4rem;
+  padding:1rem 1.2rem 1.15rem;
+  box-shadow:0 18px 40px -18px rgba(0,0,0,.6);
+  cursor:pointer;
+}
+.card.fresh{ animation:land .45s cubic-bezier(.2,.9,.3,1.25); }
+@keyframes land{ from{ transform:translateY(14px) scale(.97); } to{ transform:none; } }
+.q{ margin:0 0 .35rem; font-size:.95rem; line-height:1.35; color:var(--gold-muted);
+    display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.a{ margin:0; font-size:clamp(1.9rem, 8.5vw, 3.4rem); line-height:1.02; font-weight:800; letter-spacing:-.02em;
+    font-variation-settings:"opsz" 96; overflow-wrap:anywhere; }
+.a:empty{ display:none; }
+.why{ margin:.5rem 0 0; font-size:.95rem; line-height:1.4; }
+.why:empty{ display:none; }
+.conf{ display:inline-block; margin-top:.6rem; padding:.15rem .6rem; border-radius:999px;
+       border:1.5px solid var(--gold-ink); font-size:.8rem; font-weight:600; }
+.conf[hidden]{ display:none; }
+
+/* ---------- Setup / settings sheet ---------- */
+#setup{ position:fixed; inset:0; overflow-y:auto; background:var(--page); z-index:5;
+        padding:calc(env(safe-area-inset-top, 0px) + 1.5rem) 1.25rem calc(env(safe-area-inset-bottom, 0px) + 2rem); }
+#setup[hidden]{ display:none; }
+.sheet-inner{ max-width:30rem; margin:0 auto; }
+.mark{ width:3.2rem; height:3.2rem; border-radius:1rem .3rem 1rem 1rem; background:var(--gold);
+       display:grid; place-items:center; color:var(--gold-ink); margin-bottom:1rem; }
+.mark svg{ width:1.8rem; height:1.8rem; }
+h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-.03em; font-variation-settings:"opsz" 96; }
+.lede{ margin:.75rem 0 1.75rem; color:var(--muted); font-size:1.05rem; line-height:1.5; }
+.field{ display:block; margin-bottom:1.1rem; }
+.field > span{ display:block; font-weight:600; font-size:.95rem; margin-bottom:.4rem; }
+.field input,.field select{
+  width:100%; min-height:3rem; padding:.7rem .9rem; border-radius:.75rem;
+  border:1.5px solid var(--line); background:var(--field);
+}
+.field small{ display:block; margin-top:.35rem; color:var(--muted); font-size:.85rem; line-height:1.4; }
+.row{ display:grid; grid-template-columns:1fr 1fr; gap:.75rem; }
+.check{ display:flex; align-items:center; gap:.6rem; margin:-.25rem 0 1.1rem; font-size:.95rem; }
+.check input{ width:1.25rem; height:1.25rem; accent-color:var(--focus); }
+.msg{ margin:0 0 1rem; padding:.8rem 1rem; border-radius:.75rem; line-height:1.45;
+      background:var(--surface); border:1.5px solid var(--err); }
+.msg[hidden]{ display:none; }
+.actions{ display:flex; gap:.75rem; flex-wrap:wrap; }
+.primary{
+  flex:1; min-height:3.4rem; border:0; border-radius:1rem; cursor:pointer;
+  background:var(--gold); color:var(--gold-ink); font-weight:800; font-size:1.15rem;
+}
+.secondary{
+  min-height:3.4rem; padding:0 1.2rem; border-radius:1rem; cursor:pointer;
+  background:transparent; border:1.5px solid var(--line); font-weight:600;
+}
+.secondary[hidden]{ display:none; }
+.fine{ margin:1.25rem 0 0; color:var(--muted); font-size:.85rem; line-height:1.5; }
+
+@media (prefers-reduced-motion: reduce){
+  .card.fresh{ animation:none; }
+  .status[data-kind="busy"] .dot{ animation:none; }
+}
+</style>
+</head>
+<body>
+
+<section id="setup" aria-labelledby="setup-title">
+  <div class="sheet-inner">
+    <div class="mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1 2V16h5.2v-.2c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/></svg>
+    </div>
+    <h1 id="setup-title">Trivia Lens</h1>
+    <p class="lede">Point your phone at a trivia question on another screen. It reads the question and shows the answer, and says it out loud, without you touching anything.</p>
+
+    <label class="field"><span>Gemini API key</span>
+      <input id="key" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste your key from Google AI Studio">
+    </label>
+    <label class="check"><input id="remember" type="checkbox"> Remember the key on this phone</label>
+
+    <label class="field"><span>Model</span>
+      <input id="model" list="models" autocapitalize="off" spellcheck="false">
+      <datalist id="models">
+        <option value="gemini-flash-lite-latest">Fastest, most free requests</option>
+        <option value="gemini-flash-latest">Smarter, slower</option>
+      </datalist>
+      <small>Flash-Lite is quickest. Switch to gemini-flash-latest if answers are often wrong.</small>
+    </label>
+
+    <div class="row">
+      <label class="field"><span>Seconds between checks</span>
+        <input id="gap" type="number" min="2" max="60" step="1" inputmode="numeric">
+      </label>
+      <label class="field"><span>Change sensitivity</span>
+        <select id="sens">
+          <option value="low">Low</option>
+          <option value="normal">Normal</option>
+          <option value="high">High</option>
+        </select>
+      </label>
+    </div>
+
+    <label class="check"><input id="speak" type="checkbox"> Read answers aloud</label>
+
+    <p id="setup-msg" class="msg" role="alert" hidden></p>
+
+    <div class="actions">
+      <button id="go" class="primary" type="button">Start watching</button>
+      <button id="stop-from-sheet" class="secondary" type="button" hidden>Stop</button>
+    </div>
+
+    <p class="fine">Your key stays in this browser and goes only to Google’s Gemini API. Free-tier requests may be used by Google to improve its products, so keep it to trivia.</p>
+  </div>
+</section>
+
+<main id="stage" hidden>
+  <video id="cam" playsinline muted autoplay></video>
+
+  <header class="bar">
+    <div id="status" class="status" role="status" data-kind="still"><i class="dot"></i><span id="status-text">Starting camera</span></div>
+    <div class="bar-actions">
+      <button id="settings-btn" class="pill-btn" type="button" aria-label="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
+      <button id="stop-btn" class="pill-btn" type="button">Stop</button>
+    </div>
+  </header>
+
+  <div id="zoom-wrap" class="zoom" hidden>
+    <label for="zoom">Zoom</label>
+    <input id="zoom" type="range">
+  </div>
+
+  <section id="card" class="card" aria-live="polite" title="Tap to hear the answer again">
+    <p id="q" class="q">Point the camera at a question. The answer shows up here.</p>
+    <p id="a" class="a"></p>
+    <p id="why" class="why"></p>
+    <span id="conf" class="conf" hidden></span>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const el = {
+    setup: $('#setup'), stage: $('#stage'), video: $('#cam'),
+    key: $('#key'), remember: $('#remember'), model: $('#model'), gap: $('#gap'), sens: $('#sens'), speak: $('#speak'),
+    setupMsg: $('#setup-msg'), go: $('#go'), stopFromSheet: $('#stop-from-sheet'),
+    status: $('#status'), statusText: $('#status-text'), settingsBtn: $('#settings-btn'), stopBtn: $('#stop-btn'),
+    zoomWrap: $('#zoom-wrap'), zoom: $('#zoom'),
+    card: $('#card'), q: $('#q'), a: $('#a'), why: $('#why'), conf: $('#conf')
+  };
+
+  // ---------- Safe storage ----------
+  const store = {
+    get(k){ try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v){ try { localStorage.setItem(k, v); } catch (e) {} },
+    del(k){ try { localStorage.removeItem(k); } catch (e) {} }
+  };
+
+  // ---------- Settings ----------
+  const SENS = { low: { change: 16, still: 8 }, normal: { change: 10, still: 5 }, high: { change: 6, still: 4 } };
+  const settings = { key: '', model: 'gemini-flash-lite-latest', gap: 6, sens: 'normal', speak: true };
+
+  function loadSettings(){
+    const savedKey = store.get('tl.key');
+    if (savedKey) { settings.key = savedKey; el.remember.checked = true; }
+    settings.model = store.get('tl.model') || settings.model;
+    settings.gap = Number(store.get('tl.gap')) || settings.gap;
+    settings.sens = store.get('tl.sens') || settings.sens;
+    const sp = store.get('tl.speak'); settings.speak = sp === null ? true : sp === '1';
+    el.key.value = settings.key; el.model.value = settings.model; el.gap.value = settings.gap;
+    el.sens.value = settings.sens; el.speak.checked = settings.speak;
+  }
+  function readForm(){
+    settings.key = el.key.value.trim();
+    settings.model = (el.model.value.trim() || 'gemini-flash-lite-latest').replace(/^models\//, '');
+    settings.gap = Math.min(60, Math.max(2, Number(el.gap.value) || 6));
+    settings.sens = SENS[el.sens.value] ? el.sens.value : 'normal';
+    settings.speak = el.speak.checked;
+    if (el.remember.checked) store.set('tl.key', settings.key); else store.del('tl.key');
+    store.set('tl.model', settings.model); store.set('tl.gap', String(settings.gap));
+    store.set('tl.sens', settings.sens); store.set('tl.speak', settings.speak ? '1' : '0');
+  }
+
+  // ---------- State ----------
+  const S = {
+    running: false, stream: null, track: null, timer: null, wakeLock: null,
+    busy: false, lastCallAt: 0, holdUntil: 0,
+    prevSig: null, sentSig: null, stillCount: 0,
+    lastQuestion: '', lastSpoken: ''
+  };
+
+  // ---------- UI helpers ----------
+  function setStatus(kind, text){
+    el.status.dataset.kind = kind;
+    if (el.statusText.textContent !== text) el.statusText.textContent = text;
+  }
+  function showSetupMsg(text){
+    el.setupMsg.textContent = text || '';
+    el.setupMsg.hidden = !text;
+  }
+  function openSheet(message){
+    el.go.textContent = S.running ? 'Done' : 'Start watching';
+    el.stopFromSheet.hidden = !S.running;
+    showSetupMsg(message);
+    el.setup.hidden = false;
+  }
+
+  // ---------- Speech ----------
+  function speak(text){
+    if (!settings.speak || !('speechSynthesis' in window) || !text) return;
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 1.05;
+      speechSynthesis.speak(u);
+      S.lastSpoken = text;
+    } catch (e) {}
+  }
+
+  // ---------- Frame change detection (runs on the phone, no API cost) ----------
+  const SW = 64, SH = 36;
+  const sCanvas = document.createElement('canvas'); sCanvas.width = SW; sCanvas.height = SH;
+  const sCtx = sCanvas.getContext('2d', { willReadFrequently: true });
+
+  function signature(){
+    sCtx.drawImage(el.video, 0, 0, SW, SH);
+    const d = sCtx.getImageData(0, 0, SW, SH).data;
+    const g = new Float32Array(SW * SH);
+    let sum = 0;
+    for (let i = 0, j = 0; i < d.length; i += 4, j++) { g[j] = 0.3 * d[i] + 0.59 * d[i + 1] + 0.11 * d[i + 2]; sum += g[j]; }
+    const mean = sum / g.length;
+    for (let j = 0; j < g.length; j++) g[j] -= mean; // ignore auto-exposure brightness shifts
+    return g;
+  }
+  function difference(a, b){
+    if (!a || !b) return 255;
+    let s = 0;
+    for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]);
+    return s / a.length;
+  }
+
+  // ---------- Capture a frame for Gemini ----------
+  const fCanvas = document.createElement('canvas');
+  function captureJpeg(){
+    const v = el.video, max = 1280;
+    const scale = Math.min(1, max / Math.max(v.videoWidth, v.videoHeight));
+    fCanvas.width = Math.round(v.videoWidth * scale);
+    fCanvas.height = Math.round(v.videoHeight * scale);
+    fCanvas.getContext('2d').drawImage(v, 0, 0, fCanvas.width, fCanvas.height);
+    return fCanvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+  }
+
+  // ---------- Gemini ----------
+  const PROMPT = [
+    'This is a photo taken by a phone camera pointed at a computer screen.',
+    'If the screen shows a trivia or quiz question, read the question and any answer options, then answer it.',
+    'Reply with JSON only, in exactly this shape:',
+    '{"has_question": true, "question": "the question as written", "answer": "short answer; for multiple choice give the option letter and its text", "explanation": "one short sentence on why", "confidence": "high" | "medium" | "low"}',
+    'If no question is clearly readable, reply {"has_question": false}.',
+    'If several questions are visible, answer the most prominent one.'
+  ].join('\n');
+
+  function parseJson(text){
+    if (!text) return null;
+    const clean = text.replace(/```json|```/g, '').trim();
+    const start = clean.indexOf('{'), end = clean.lastIndexOf('}');
+    if (start < 0 || end < start) return null;
+    try { return JSON.parse(clean.slice(start, end + 1)); } catch (e) { return null; }
+  }
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9\u00c0-\uffff]+/g, ' ').trim().slice(0, 160);
+
+  function retrySeconds(data){
+    const details = (data && data.error && data.error.details) || [];
+    for (const d of details) {
+      if (d && typeof d.retryDelay === 'string') { const n = parseFloat(d.retryDelay); if (n > 0) return Math.ceil(n); }
+    }
+    return 30;
+  }
+
+  async function ask(sig){
+    S.busy = true;
+    S.lastCallAt = Date.now();
+    setStatus('busy', 'Reading the question');
+    let data = {};
+    try {
+      const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(settings.model) + ':generateContent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': settings.key },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [ { text: PROMPT }, { inline_data: { mime_type: 'image/jpeg', data: captureJpeg() } } ] }],
+          generationConfig: { temperature: 0.2, responseMimeType: 'application/json' }
+        })
+      });
+      data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        const msg = (data.error && data.error.message) || '';
+        if (res.status === 429) {
+          const wait = retrySeconds(data);
+          S.holdUntil = Date.now() + wait * 1000;
+          setStatus('wait', 'Free-tier limit hit. Resuming in ' + wait + ' s');
+          return;
+        }
+        if (res.status === 400 && /api key/i.test(msg) || res.status === 401 || res.status === 403) {
+          stop(); openSheet('Gemini rejected the API key. Paste a valid key from Google AI Studio, then start again.');
+          return;
+        }
+        if (res.status === 404) {
+          stop(); openSheet('Gemini doesn’t recognise the model “' + settings.model + '”. Pick one from the Model list, then start again.');
+          return;
+        }
+        S.holdUntil = Date.now() + 5000;
+        setStatus('err', 'Gemini error ' + res.status + '. Retrying shortly');
+        return;
+      }
+
+      const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+      const out = parseJson(parts.map((p) => p.text || '').join(''));
+      S.sentSig = sig;
+
+      if (!out || !out.has_question || !out.answer) { setStatus('live', 'No question in view'); return; }
+
+      const key = norm(out.question);
+      if (key && key === S.lastQuestion) { setStatus('live', 'Same question'); return; }
+      S.lastQuestion = key;
+      showAnswer(out);
+      setStatus('live', 'Watching for the next question');
+    } catch (e) {
+      S.holdUntil = Date.now() + 5000;
+      setStatus('err', 'Can’t reach Gemini. Check the connection');
+    } finally {
+      S.busy = false;
+    }
+  }
+
+  function showAnswer(out){
+    el.q.textContent = out.question || '';
+    el.a.textContent = out.answer;
+    el.why.textContent = out.explanation || '';
+    const c = String(out.confidence || '').toLowerCase();
+    el.conf.hidden = !c;
+    el.conf.textContent = c === 'high' ? 'Confident' : c === 'medium' ? 'Fairly sure' : c ? 'Not sure' : '';
+    el.card.classList.remove('fresh'); void el.card.offsetWidth; el.card.classList.add('fresh');
+    speak(String(out.answer) + (c === 'low' ? '. Not sure about this one.' : ''));
+  }
+
+  // ---------- Main loop ----------
+  function tick(){
+    if (!S.running) return;
+    const v = el.video;
+    if (v.readyState >= 2 && v.videoWidth) {
+      const t = SENS[settings.sens];
+      const sig = signature();
+      const motion = difference(sig, S.prevSig);
+      S.prevSig = sig;
+      S.stillCount = motion < t.still ? S.stillCount + 1 : 0;
+      const changed = difference(sig, S.sentSig) > t.change;
+
+      if (!S.busy) {
+        if (S.stillCount < 2) {
+          setStatus('still', 'Hold steady');
+        } else if (changed) {
+          const wait = Math.max(S.lastCallAt + settings.gap * 1000, S.holdUntil) - Date.now();
+          if (wait <= 0) ask(sig);
+          else setStatus('wait', 'New screen. Checking in ' + Math.ceil(wait / 1000) + ' s');
+        } else if (el.status.dataset.kind === 'still') {
+          setStatus('live', 'Watching for a question');
+        }
+      }
+    }
+    S.timer = setTimeout(tick, 600);
+  }
+
+  // ---------- Camera + wake lock ----------
+  async function keepAwake(){
+    try { if ('wakeLock' in navigator && !S.wakeLock) { S.wakeLock = await navigator.wakeLock.request('screen'); S.wakeLock.addEventListener('release', () => { S.wakeLock = null; }); } } catch (e) {}
+  }
+
+  function setupZoom(){
+    el.zoomWrap.hidden = true;
+    try {
+      const caps = S.track.getCapabilities ? S.track.getCapabilities() : {};
+      if (!caps.zoom) return;
+      const cur = (S.track.getSettings().zoom) || caps.zoom.min;
+      el.zoom.min = caps.zoom.min; el.zoom.max = caps.zoom.max; el.zoom.step = caps.zoom.step || 0.1; el.zoom.value = cur;
+      el.zoomWrap.hidden = false;
+    } catch (e) {}
+  }
+
+  async function start(){
+    readForm();
+    if (!settings.key) { showSetupMsg('Paste your Gemini API key first.'); el.key.focus(); return; }
+    if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showSetupMsg('The camera only works when this page is opened over https. Host it (for example on Netlify Drop or GitHub Pages) and open that link on your phone.');
+      return;
+    }
+    // Unlock speech on iOS: it must start from a tap.
+    if (settings.speak && 'speechSynthesis' in window) { try { speechSynthesis.speak(new SpeechSynthesisUtterance('Ready')); } catch (e) {} }
+
+    try {
+      S.stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+      });
+    } catch (e) {
+      showSetupMsg(e && e.name === 'NotAllowedError'
+        ? 'Camera access is blocked. Allow the camera for this site in your browser settings, then tap Start again.'
+        : 'The camera didn’t start (' + (e && e.name || 'unknown error') + '). Close other apps using the camera and try again.');
+      return;
+    }
+    S.track = S.stream.getVideoTracks()[0];
+    try { await S.track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) {}
+    el.video.srcObject = S.stream;
+    try { await el.video.play(); } catch (e) {}
+    setupZoom();
+    keepAwake();
+
+    Object.assign(S, { running: true, busy: false, prevSig: null, sentSig: null, stillCount: 0, lastQuestion: '', holdUntil: 0, lastCallAt: 0 });
+    el.setup.hidden = true;
+    el.stage.hidden = false;
+    setStatus('still', 'Hold steady');
+    clearTimeout(S.timer);
+    tick();
+  }
+
+  function stop(){
+    S.running = false;
+    clearTimeout(S.timer);
+    if (S.stream) S.stream.getTracks().forEach((t) => t.stop());
+    S.stream = null; S.track = null;
+    if (S.wakeLock) { S.wakeLock.release().catch(() => {}); S.wakeLock = null; }
+    try { speechSynthesis.cancel(); } catch (e) {}
+    el.stage.hidden = true;
+  }
+
+  // ---------- Events ----------
+  el.go.addEventListener('click', () => {
+    if (S.running) { readForm(); showSetupMsg(''); el.setup.hidden = true; S.sentSig = null; return; }
+    start();
+  });
+  el.stopFromSheet.addEventListener('click', () => { stop(); openSheet(''); });
+  el.stopBtn.addEventListener('click', () => { stop(); openSheet(''); });
+  el.settingsBtn.addEventListener('click', () => openSheet(''));
+  el.card.addEventListener('click', () => { if (el.a.textContent) { const keep = settings.speak; settings.speak = true; speak(el.a.textContent); settings.speak = keep; } });
+  el.zoom.addEventListener('input', () => {
+    if (S.track) S.track.applyConstraints({ advanced: [{ zoom: Number(el.zoom.value) }] }).catch(() => {});
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && S.running) keepAwake();
+  });
+
+  loadSettings();
+})();
+</script>
+</body>
+</html>
