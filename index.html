@@ -84,6 +84,22 @@ button,input,select{ font:inherit; color:inherit; }
   backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
 }
 .zoom[hidden]{ display:none; }
+
+/* tap to focus */
+.ring{
+  position:absolute; width:4.5rem; height:4.5rem; margin:-2.25rem 0 0 -2.25rem; pointer-events:none;
+  border:2px solid var(--gold); border-radius:1rem; box-shadow:0 0 0 1px rgba(0,0,0,.35);
+}
+.ring[hidden]{ display:none; }
+.ring.on{ animation:ring 1s ease-out forwards; }
+@keyframes ring{ 0%{ transform:scale(1.4); opacity:1; } 35%{ transform:scale(1); opacity:1; } 100%{ transform:scale(1); opacity:0; } }
+.toast{
+  position:absolute; left:1rem; right:1rem; top:calc(env(safe-area-inset-top, 0px) + 8rem);
+  max-width:22rem; margin:0 auto; padding:.6rem .9rem; border-radius:1rem; text-align:center;
+  background:var(--overlay); color:var(--overlay-text); font-size:.95rem; font-weight:600; line-height:1.35;
+  backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); pointer-events:none;
+}
+.toast[hidden]{ display:none; }
 .zoom input{ flex:1; accent-color:var(--gold); }
 
 /* The answer cue card: the one loud thing on screen */
@@ -157,6 +173,7 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
 
 @media (prefers-reduced-motion: reduce){
   .card.fresh{ animation:none; }
+  .ring.on{ animation:none; }
   .status[data-kind="busy"] .dot{ animation:none; }
 }
 </style>
@@ -225,6 +242,8 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
 
 <main id="stage" hidden>
   <video id="cam" playsinline muted autoplay></video>
+  <div id="ring" class="ring" hidden></div>
+  <p id="toast" class="toast" role="status" hidden></p>
 
   <header class="bar">
     <div id="status" class="status" role="status" data-kind="still"><i class="dot"></i><span id="status-text">Starting camera</span></div>
@@ -242,7 +261,7 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
   </div>
 
   <section id="card" class="card" aria-live="polite" title="Tap to hear the answer again">
-    <p id="q" class="q">Point the camera at a question. The answer shows up here.</p>
+    <p id="q" class="q">Point the camera at a question. The answer shows up here. Blurry? Tap the screen to focus.</p>
     <p id="a" class="a"></p>
     <p id="why" class="why"></p>
     <div class="card-foot">
@@ -264,7 +283,7 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
     setupMsg: $('#setup-msg'), go: $('#go'), stopFromSheet: $('#stop-from-sheet'),
     status: $('#status'), statusText: $('#status-text'), settingsBtn: $('#settings-btn'), stopBtn: $('#stop-btn'),
     zoomWrap: $('#zoom-wrap'), zoom: $('#zoom'),
-    card: $('#card'), q: $('#q'), a: $('#a'), why: $('#why'), conf: $('#conf'), by: $('#by'), next: $('#next'), par: $('#par')
+    card: $('#card'), q: $('#q'), a: $('#a'), why: $('#why'), conf: $('#conf'), by: $('#by'), next: $('#next'), par: $('#par'), ring: $('#ring'), toast: $('#toast')
   };
 
   // ---------- Safe storage ----------
@@ -647,6 +666,45 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
     } catch (e) {}
   }
 
+  // ---------- Tap to focus (Chrome on Android; iPhones don't let websites move the focus) ----------
+  let toastTimer = null;
+  function toast(text){
+    el.toast.textContent = text; el.toast.hidden = false;
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.toast.hidden = true; }, 3500);
+  }
+  function showRing(px, py){
+    const box = el.stage.getBoundingClientRect();
+    el.ring.style.left = (px - box.left) + 'px'; el.ring.style.top = (py - box.top) + 'px';
+    el.ring.hidden = false; el.ring.classList.remove('on'); void el.ring.offsetWidth; el.ring.classList.add('on');
+    clearTimeout(showRing.t); showRing.t = setTimeout(() => { el.ring.hidden = true; }, 1000);
+  }
+  async function focusAt(px, py){
+    const t = S.track, v = el.video;
+    if (!t || !v.videoWidth) return;
+    const caps = t.getCapabilities ? t.getCapabilities() : {};
+    const modes = caps.focusMode || [];
+    const poi = !!(navigator.mediaDevices.getSupportedConstraints && navigator.mediaDevices.getSupportedConstraints().pointsOfInterest);
+    if (!poi && !modes.length) { toast('This phone doesn’t let websites set the focus. Move the phone a little closer or further away.'); return; }
+    showRing(px, py);
+
+    // where the tap lands in the camera picture (the video is cropped to fill the screen)
+    const r = v.getBoundingClientRect(), s = Math.max(r.width / v.videoWidth, r.height / v.videoHeight);
+    const clamp = (n) => Math.min(1, Math.max(0, n));
+    const x = clamp((px - r.left - (r.width - v.videoWidth * s) / 2) / (v.videoWidth * s));
+    const y = clamp((py - r.top - (r.height - v.videoHeight * s) / 2) / (v.videoHeight * s));
+
+    // "single-shot" focuses once on that spot and holds it (a quiz screen stays at the same distance);
+    // without it, continuous focus is pointed at that spot instead
+    const mode = modes.includes('single-shot') ? 'single-shot' : modes.includes('continuous') ? 'continuous' : null;
+    const want = Object.assign(poi ? { pointsOfInterest: [{ x, y }] } : {}, mode ? { focusMode: mode } : {});
+    try {
+      if (mode === 'single-shot' && modes.includes('continuous')) await t.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });   // so the next single-shot starts a fresh focus
+      await t.applyConstraints({ advanced: [want] });
+    } catch (e) {
+      toast('The camera didn’t refocus. Try tapping again.');
+    }
+  }
+
   async function start(){
     readForm();
     if (!settings.key) { showSetupMsg('Paste your Gemini API key first.'); el.key.focus(); return; }
@@ -676,7 +734,7 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
     keepAwake();
 
     Object.assign(S, { running: true, busy: false, prevSig: null, sentSig: null, stillCount: 0, lastQuestion: '', holdUntil: 0, lastCallAt: 0 });
-    el.q.textContent = 'Point the camera at a question. The answer shows up here.';
+    el.q.textContent = 'Point the camera at a question. The answer shows up here. Blurry? Tap the screen to focus.';
     el.a.textContent = el.why.textContent = el.by.textContent = '';
     el.conf.hidden = true; el.next.hidden = true; el.card.hidden = false;
     el.setup.hidden = true;
@@ -714,6 +772,11 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
   el.card.addEventListener('click', () => { if (el.a.textContent) { const keep = settings.speak; settings.speak = true; speak(el.a.textContent); settings.speak = keep; } });
   el.zoom.addEventListener('input', () => {
     if (S.track) S.track.applyConstraints({ advanced: [{ zoom: Number(el.zoom.value) }] }).catch(() => {});
+  });
+  // a tap on the camera picture (not on the buttons, zoom or answer card) focuses there
+  el.stage.addEventListener('click', (e) => {
+    if (!S.running || e.target.closest('.bar, .zoom, .card')) return;
+    focusAt(e.clientX, e.clientY);
   });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && S.running) keepAwake();
