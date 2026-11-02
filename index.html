@@ -110,6 +110,15 @@ button,input,select{ font:inherit; color:inherit; }
 .conf[hidden]{ display:none; }
 .by{ display:block; margin-top:.45rem; font-size:.75rem; color:var(--gold-muted); }
 .by:empty{ display:none; }
+.card[hidden]{ display:none; }
+.card-foot{ display:flex; align-items:flex-end; justify-content:space-between; gap:.75rem; }
+.meta{ min-width:0; }
+.next{
+  flex:none; min-height:3rem; min-width:6.5rem; margin-top:.6rem; padding:0 1.4rem;
+  border:0; border-radius:999px; cursor:pointer;
+  background:var(--gold-ink); color:var(--gold); font-weight:800; font-size:1.1rem;
+}
+.next[hidden]{ display:none; }
 
 /* ---------- Setup / settings sheet ---------- */
 #setup{ position:fixed; inset:0; overflow-y:auto; background:var(--page); z-index:5;
@@ -191,6 +200,16 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
       </label>
     </div>
 
+    <label class="field"><span>Models at once</span>
+      <select id="par">
+        <option value="1">1 (saves free requests)</option>
+        <option value="2">2</option>
+        <option value="3">3 (fastest answer)</option>
+        <option value="4">4</option>
+      </select>
+      <small>Each question goes to this many models at the same time and the first answer is shown. More models answer faster but use up the free daily limits sooner.</small>
+    </label>
+
     <label class="check"><input id="speak" type="checkbox"> Read answers aloud</label>
 
     <p id="setup-msg" class="msg" role="alert" hidden></p>
@@ -226,8 +245,13 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
     <p id="q" class="q">Point the camera at a question. The answer shows up here.</p>
     <p id="a" class="a"></p>
     <p id="why" class="why"></p>
-    <span id="conf" class="conf" hidden></span>
-    <small id="by" class="by"></small>
+    <div class="card-foot">
+      <div class="meta">
+        <span id="conf" class="conf" hidden></span>
+        <small id="by" class="by"></small>
+      </div>
+      <button id="next" class="next" type="button" hidden>Next</button>
+    </div>
   </section>
 </main>
 
@@ -240,7 +264,7 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
     setupMsg: $('#setup-msg'), go: $('#go'), stopFromSheet: $('#stop-from-sheet'),
     status: $('#status'), statusText: $('#status-text'), settingsBtn: $('#settings-btn'), stopBtn: $('#stop-btn'),
     zoomWrap: $('#zoom-wrap'), zoom: $('#zoom'),
-    card: $('#card'), q: $('#q'), a: $('#a'), why: $('#why'), conf: $('#conf'), by: $('#by')
+    card: $('#card'), q: $('#q'), a: $('#a'), why: $('#why'), conf: $('#conf'), by: $('#by'), next: $('#next'), par: $('#par')
   };
 
   // ---------- Safe storage ----------
@@ -252,7 +276,7 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
 
   // ---------- Settings ----------
   const SENS = { low: { change: 16, still: 8 }, normal: { change: 10, still: 5 }, high: { change: 6, still: 4 } };
-  const settings = { key: '', model: 'auto', gap: 6, sens: 'normal', speak: true };
+  const settings = { key: '', model: 'auto', gap: 6, sens: 'normal', speak: true, par: 3 };
 
   function loadSettings(){
     const savedKey = store.get('tl.key');
@@ -262,6 +286,8 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
     settings.gap = Number(store.get('tl.gap')) || settings.gap;
     settings.sens = store.get('tl.sens') || settings.sens;
     const sp = store.get('tl.speak'); settings.speak = sp === null ? true : sp === '1';
+    settings.par = Math.min(4, Math.max(1, Number(store.get('tl.par')) || settings.par));
+    el.par.value = String(settings.par);
     el.key.value = settings.key; el.model.value = settings.model; el.gap.value = settings.gap;
     el.sens.value = settings.sens; el.speak.checked = settings.speak;
   }
@@ -270,6 +296,8 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
     settings.model = (el.model.value.trim() || 'auto').replace(/^models\//, '');
     settings.gap = Math.min(60, Math.max(2, Number(el.gap.value) || 6));
     settings.sens = SENS[el.sens.value] ? el.sens.value : 'normal';
+    settings.par = Math.min(4, Math.max(1, Number(el.par.value) || 3));
+    store.set('tl.par', String(settings.par));
     settings.speak = el.speak.checked;
     if (el.remember.checked) store.set('tl.key', settings.key); else store.del('tl.key');
     store.set('tl.model', settings.model); store.set('tl.gap', String(settings.gap));
@@ -423,10 +451,15 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
     return { thinkingBudget: /pro/.test(model) ? 128 : 0 };
   }
 
-  // one model: { data, model } when it answered, null when it is limited / busy (it rests), throws on key or network problems
-  async function tryModel(model, image){
+  // one model: { data, model } when it answered, null when it is limited / busy (it rests) or another model won,
+  // throws on key or network problems
+  async function tryModel(model, image, signal){
     for (let think = !noThink[model]; ; think = false) {
-      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 12000);
+      if (signal.aborted) return null;
+      let timedOut = false;
+      const ctl = new AbortController(), timer = setTimeout(() => { timedOut = true; ctl.abort(); }, 12000);
+      const lost = () => ctl.abort();
+      signal.addEventListener('abort', lost);
       let res, data;
       try {
         res = await fetch(BASE + '/models/' + encodeURIComponent(model) + ':generateContent', {
@@ -440,11 +473,13 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
         });
         data = await res.json().catch(() => ({}));
       } catch (e) {
-        if (!ctl.signal.aborted) throw new NetError();
+        if (signal.aborted) return null;                  // another model answered first
+        if (!timedOut) throw new NetError();
         restModel(model, 120000); S.problem = 'slow';   // too slow right now: let the next model answer
         return null;
       } finally {
         clearTimeout(timer);
+        signal.removeEventListener('abort', lost);
       }
 
       if (res.ok) return { data, model };
@@ -464,20 +499,61 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
     }
   }
 
+  const readOut = (data) => {
+    const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+    return parseJson(parts.filter((p) => !p.thought).map((p) => p.text || '').join(''));
+  };
+
+  // several models get the same photo at once, fastest first; the first real answer wins and the others are cancelled.
+  // A model that is limited or busy is replaced by the next one in line, so `settings.par` stay in the race.
+  function race(order, image){
+    return new Promise((resolve, reject) => {
+      const stopAll = new AbortController();
+      let idx = 0, pending = 0, done = false, answered = null, netErr = null;
+      const finish = (val, err) => {
+        if (done) return;
+        done = true; stopAll.abort();
+        err ? reject(err) : resolve(val);
+      };
+      const settle = () => { if (!pending) netErr && !answered ? finish(null, netErr) : finish(answered); };   // nobody left racing
+      const launch = () => {
+        while (!done && S.running && pending < settings.par && idx < order.length) {
+          const model = order[idx++];
+          pending++;
+          tryModel(model, image, stopAll.signal).then((hit) => {
+            pending--;
+            if (done) return;
+            if (hit) {
+              const out = readOut(hit.data);
+              if (out && out.has_question && out.answer) return finish({ out, model: hit.model });
+              answered = answered || { out, model: hit.model };   // it saw no question: wait for the others
+            } else {
+              launch();                                          // limited / busy: the next model takes its place
+            }
+            settle();
+          }, (e) => {
+            pending--;
+            if (done) return;
+            if (e instanceof KeyError) return finish(null, e);
+            netErr = e; launch();
+          });
+        }
+        settle();
+      };
+      launch();
+    });
+  }
+
   async function ask(sig){
     S.busy = true;
     S.lastCallAt = Date.now();
     S.problem = '';
-    setStatus('busy', 'Reading the question');
     const image = captureJpeg();   // every model sees the same frame
     try {
       await loadModels();
       const order = modelOrder();
-      let hit = null;
-      for (let i = 0; i < order.length && !hit && S.running; i++) {
-        if (i) setStatus('busy', 'Trying model ' + (i + 1) + ' of ' + order.length);
-        hit = await tryModel(order[i], image);
-      }
+      setStatus('busy', settings.par > 1 && order.length > 1 ? 'Asking ' + Math.min(settings.par, order.length) + ' models at once' : 'Reading the question');
+      const hit = order.length ? await race(order, image) : null;
       if (!S.running) return;
 
       if (!hit) {
@@ -489,8 +565,7 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
         return;
       }
 
-      const parts = (hit.data.candidates && hit.data.candidates[0] && hit.data.candidates[0].content && hit.data.candidates[0].content.parts) || [];
-      const out = parseJson(parts.filter((p) => !p.thought).map((p) => p.text || '').join(''));
+      const out = hit.out;
       S.sentSig = sig;
 
       if (!out || !out.has_question || !out.answer) { setStatus('live', 'No question in view'); return; }
@@ -520,6 +595,8 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
     el.conf.hidden = !c;
     el.conf.textContent = c === 'high' ? 'Confident' : c === 'medium' ? 'Fairly sure' : c ? 'Not sure' : '';
     el.by.textContent = model ? 'by ' + model : '';
+    el.next.hidden = false;
+    el.card.hidden = false;
     el.card.classList.remove('fresh'); void el.card.offsetWidth; el.card.classList.add('fresh');
     speak(String(out.answer) + (c === 'low' ? '. Not sure about this one.' : ''));
   }
@@ -596,6 +673,9 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
     keepAwake();
 
     Object.assign(S, { running: true, busy: false, prevSig: null, sentSig: null, stillCount: 0, lastQuestion: '', holdUntil: 0, lastCallAt: 0 });
+    el.q.textContent = 'Point the camera at a question. The answer shows up here.';
+    el.a.textContent = el.why.textContent = el.by.textContent = '';
+    el.conf.hidden = true; el.next.hidden = true; el.card.hidden = false;
     el.setup.hidden = true;
     el.stage.hidden = false;
     setStatus('still', 'Hold steady');
@@ -621,6 +701,13 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
   el.stopFromSheet.addEventListener('click', () => { stop(); openSheet(''); });
   el.stopBtn.addEventListener('click', () => { stop(); openSheet(''); });
   el.settingsBtn.addEventListener('click', () => openSheet(''));
+  // Next: the answer card goes away and the camera watches for the next question
+  el.next.addEventListener('click', (e) => {
+    e.stopPropagation();
+    el.card.hidden = true;
+    try { speechSynthesis.cancel(); } catch (err) {}
+    if (S.running && !S.busy) setStatus('live', 'Watching for the next question');
+  });
   el.card.addEventListener('click', () => { if (el.a.textContent) { const keep = settings.speak; settings.speak = true; speak(el.a.textContent); settings.speak = keep; } });
   el.zoom.addEventListener('input', () => {
     if (S.track) S.track.applyConstraints({ advanced: [{ zoom: Number(el.zoom.value) }] }).catch(() => {});
