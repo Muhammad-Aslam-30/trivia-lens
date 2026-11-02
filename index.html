@@ -189,7 +189,7 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
 
     <div class="row">
       <label class="field"><span>Seconds between checks</span>
-        <input id="gap" type="number" min="2" max="60" step="1" inputmode="numeric">
+        <input id="gap" type="number" min="1" max="60" step="1" inputmode="numeric">
       </label>
       <label class="field"><span>Change sensitivity</span>
         <select id="sens">
@@ -276,16 +276,19 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
 
   // ---------- Settings ----------
   const SENS = { low: { change: 16, still: 8 }, normal: { change: 10, still: 5 }, high: { change: 6, still: 4 } };
-  const settings = { key: '', model: 'auto', gap: 6, sens: 'normal', speak: true, par: 3 };
+  const settings = { key: '', model: 'auto', gap: 1, sens: 'high', speak: false, par: 3 };
 
   function loadSettings(){
     const savedKey = store.get('tl.key');
     if (savedKey) { settings.key = savedKey; el.remember.checked = true; }
     const savedModel = store.get('tl.model');
     settings.model = savedModel && savedModel !== 'gemini-flash-lite-latest' ? savedModel : settings.model;   // the old default becomes "auto"
-    settings.gap = Number(store.get('tl.gap')) || settings.gap;
+    const savedGap = Number(store.get('tl.gap'));
+    settings.gap = savedGap && savedGap !== 6 ? savedGap : settings.gap;   // the old default (6) becomes 1
+    // the old defaults ("normal", speech on) were saved on every start, so they become the new defaults
+    if (!store.get('tl.v2')) { store.del('tl.sens'); store.del('tl.speak'); store.set('tl.v2', '1'); }
     settings.sens = store.get('tl.sens') || settings.sens;
-    const sp = store.get('tl.speak'); settings.speak = sp === null ? true : sp === '1';
+    const sp = store.get('tl.speak'); settings.speak = sp === null ? settings.speak : sp === '1';
     settings.par = Math.min(4, Math.max(1, Number(store.get('tl.par')) || settings.par));
     el.par.value = String(settings.par);
     el.key.value = settings.key; el.model.value = settings.model; el.gap.value = settings.gap;
@@ -294,8 +297,8 @@ h1{ margin:0; font-size:2.6rem; line-height:1; font-weight:800; letter-spacing:-
   function readForm(){
     settings.key = el.key.value.trim();
     settings.model = (el.model.value.trim() || 'auto').replace(/^models\//, '');
-    settings.gap = Math.min(60, Math.max(2, Number(el.gap.value) || 6));
-    settings.sens = SENS[el.sens.value] ? el.sens.value : 'normal';
+    settings.gap = Math.min(60, Math.max(1, Number(el.gap.value) || 1));
+    settings.sens = SENS[el.sens.value] ? el.sens.value : 'high';
     settings.par = Math.min(4, Math.max(1, Number(el.par.value) || 3));
     store.set('tl.par', String(settings.par));
     settings.speak = el.speak.checked;
