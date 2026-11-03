@@ -224,15 +224,22 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
     </label>
     <label class="check"><input id="remember" type="checkbox"> Remember the key on this phone</label>
 
+    <label class="field"><span>Answers</span>
+      <select id="mode">
+        <option value="accurate">Most accurate: models check each other</option>
+        <option value="fast">Fastest</option>
+      </select>
+      <small>Most accurate: the smartest models think each question through. Two answer it on their own, and if they disagree a third one decides. Takes a few seconds. Fastest: two quick models race and the first answer is shown.</small>
+    </label>
+
     <label class="field"><span>Model</span>
       <input id="model" list="models" autocapitalize="off" spellcheck="false">
       <datalist id="models">
-        <option value="auto">Fastest first, then the others</option>
-        <option value="gemini-flash-lite-latest">Fastest, most free requests</option>
-        <option value="gemini-flash-latest">Smarter, slower</option>
-        <option value="gemini-pro-latest">Smartest, slowest</option>
+        <option value="auto">Every model your key can use</option>
+        <option value="gemini-flash-latest">Smart</option>
+        <option value="gemini-flash-lite-latest">Fast, most free requests</option>
       </datalist>
-      <small>“auto” uses every model your key can use, fastest first (Flash-Lite, then Flash, then Pro). When one hits its limit or is busy, the next one answers. Name a model to try it first.</small>
+      <small>“auto” uses every model your key can use, in the order the Answers setting picks. When one hits its daily limit or is busy, the next one takes over. Name a model to always try it first.</small>
     </label>
 
     <div class="row">
@@ -247,16 +254,6 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
         </select>
       </label>
     </div>
-
-    <label class="field"><span>Models at once</span>
-      <select id="par">
-        <option value="1">1 (saves free requests)</option>
-        <option value="2">2</option>
-        <option value="3">3 (fastest answer)</option>
-        <option value="4">4</option>
-      </select>
-      <small>Each question goes to this many models at the same time and the first answer is shown. More models answer faster but use up the free daily limits sooner.</small>
-    </label>
 
     <label class="check"><input id="speak" type="checkbox"> Read answers aloud</label>
 
@@ -337,7 +334,7 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
     setupMsg: $('#setup-msg'), go: $('#go'), stopFromSheet: $('#stop-from-sheet'),
     status: $('#status'), statusText: $('#status-text'), settingsBtn: $('#settings-btn'), stopBtn: $('#stop-btn'),
     zoomWrap: $('#zoom-wrap'), zoom: $('#zoom'), brightWrap: $('#bright-wrap'), bright: $('#bright'), camInfo: $('#cam-info'),
-    card: $('#card'), q: $('#q'), a: $('#a'), why: $('#why'), conf: $('#conf'), by: $('#by'), next: $('#next'), par: $('#par'), ring: $('#ring'), toast: $('#toast'),
+    card: $('#card'), q: $('#q'), a: $('#a'), why: $('#why'), conf: $('#conf'), by: $('#by'), next: $('#next'), mode: $('#mode'), ring: $('#ring'), toast: $('#toast'),
     history: $('#history'), historyBtn: $('#history-btn'), historyFromSheet: $('#history-from-sheet'), historyClose: $('#history-close'),
     historyList: $('#history-list'), historyEmpty: $('#history-empty'), historyClear: $('#history-clear')
   };
@@ -351,7 +348,7 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
 
   // ---------- Settings ----------
   const SENS = { low: { change: 16, still: 8 }, normal: { change: 10, still: 5 }, high: { change: 6, still: 4 } };
-  const settings = { key: '', model: 'auto', gap: 1, sens: 'high', speak: false, par: 3 };
+  const settings = { key: '', model: 'auto', gap: 1, sens: 'high', speak: false, mode: 'accurate' };
 
   function loadSettings(){
     const savedKey = store.get('tl.key');
@@ -364,8 +361,9 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
     if (!store.get('tl.v2')) { store.del('tl.sens'); store.del('tl.speak'); store.set('tl.v2', '1'); }
     settings.sens = store.get('tl.sens') || settings.sens;
     const sp = store.get('tl.speak'); settings.speak = sp === null ? settings.speak : sp === '1';
-    settings.par = Math.min(4, Math.max(1, Number(store.get('tl.par')) || settings.par));
-    el.par.value = String(settings.par);
+    store.del('tl.par');   // "Models at once" was replaced by the Answers setting
+    settings.mode = store.get('tl.mode') === 'fast' ? 'fast' : settings.mode;
+    el.mode.value = settings.mode;
     el.key.value = settings.key; el.model.value = settings.model; el.gap.value = settings.gap;
     el.sens.value = settings.sens; el.speak.checked = settings.speak;
   }
@@ -374,8 +372,8 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
     settings.model = (el.model.value.trim() || 'auto').replace(/^models\//, '');
     settings.gap = Math.min(60, Math.max(1, Number(el.gap.value) || 1));
     settings.sens = SENS[el.sens.value] ? el.sens.value : 'high';
-    settings.par = Math.min(4, Math.max(1, Number(el.par.value) || 3));
-    store.set('tl.par', String(settings.par));
+    settings.mode = el.mode.value === 'fast' ? 'fast' : 'accurate';
+    store.set('tl.mode', settings.mode);
     settings.speak = el.speak.checked;
     if (el.remember.checked) store.set('tl.key', settings.key); else store.del('tl.key');
     store.set('tl.model', settings.model); store.set('tl.gap', String(settings.gap));
@@ -491,25 +489,35 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
   // ---------- Capture a frame for Gemini ----------
   const fCanvas = document.createElement('canvas');
   function captureJpeg(){
-    const v = el.video, max = 1280;
+    const v = el.video, max = 1600;   // big enough to read small answer options
     const scale = Math.min(1, max / Math.max(v.videoWidth, v.videoHeight));
     fCanvas.width = Math.round(v.videoWidth * scale);
     fCanvas.height = Math.round(v.videoHeight * scale);
     const ctx = fCanvas.getContext('2d');
     ctx.filter = B.soft === 1 ? 'none' : 'brightness(' + B.soft + ')';   // Gemini sees the picture as brightened on screen
     ctx.drawImage(v, 0, 0, fCanvas.width, fCanvas.height);
-    return fCanvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+    return fCanvas.toDataURL('image/jpeg', 0.85).split(',')[1];
   }
 
   // ---------- Gemini ----------
   const PROMPT = [
     'This is a photo taken by a phone camera pointed at a computer screen.',
-    'If the screen shows a trivia or quiz question, read the question and any answer options, then answer it.',
+    'If the screen shows a trivia or quiz question, read the question and every answer option word for word, then answer it.',
+    'Getting it right matters more than anything else:',
+    '- Read the whole question twice. Watch for words that flip the meaning, like NOT, EXCEPT, LEAST, FIRST, LAST, or a year or place that narrows it down.',
+    '- Think it through step by step and check your answer against the question before you reply.',
+    '- For multiple choice, the answer must be one of the options shown; consider each option before choosing.',
+    '- If it is a trick question or a play on words, answer what the quiz is really asking.',
     'Reply with JSON only, in exactly this shape:',
-    '{"has_question": true, "question": "the question as written", "answer": "short answer; for multiple choice give the option letter and its text", "explanation": "one short sentence on why", "confidence": "high" | "medium" | "low"}',
+    '{"has_question": true, "question": "the question as written", "option": "the letter or number of the correct option for multiple choice, otherwise empty", "answer": "short answer; for multiple choice give the option letter and its text", "explanation": "one short sentence on why", "confidence": "high" | "medium" | "low"}',
     'If no question is clearly readable, reply {"has_question": false}.',
     'If several questions are visible, answer the most prominent one.'
   ].join('\n');
+  // when two models disagree, a third gets both answers and decides
+  const judgePrompt = (a, b) => PROMPT + '\n\nTwo quiz experts answered this question differently:\n'
+    + '1) ' + a.answer + (a.explanation ? ' (' + a.explanation + ')' : '') + '\n'
+    + '2) ' + b.answer + (b.explanation ? ' (' + b.explanation + ')' : '') + '\n'
+    + 'Read the question and options again carefully and work out which answer is right. If both are wrong, give the right one. Reply in the same JSON shape.';
 
   function parseJson(text){
     if (!text) return null;
@@ -528,14 +536,15 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
     return 30;
   }
 
-  // ---------- Models: fastest first; when one is limited or busy, the next one answers ----------
+  // ---------- Models: smartest first ("accurate") or fastest first ("fast"); when one is limited or busy, the next one answers ----------
   const BASE = 'https://generativelanguage.googleapis.com/v1beta';
-  const FALLBACK = ['gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-pro-latest'];
+  const FALLBACK = ['gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-2.5-flash'];
   const verOf = (n) => parseFloat((n.match(/gemini-(\d+(\.\d+)?)/) || [0, 0])[1]);
   const tierOf = (n) => /flash-lite/.test(n) ? 0 : /flash/.test(n) ? 1 : 2;   // Flash-Lite, then Flash, then Pro
+  // Pro is left out: the free tier allows 0 Pro requests, so trying it only wastes a request and time
   function rankModels(names){
     return names
-      .filter((n) => /^gemini/.test(n) && !/(image|tts|live|audio|embed|thinking|exp|-8b|robotics|computer|native|transcribe|translate|research)/.test(n))
+      .filter((n) => /^gemini/.test(n) && !/(pro|image|tts|live|audio|embed|thinking|exp|-8b|robotics|computer|native|transcribe|translate|research)/.test(n))
       .sort((x, y) => tierOf(x) - tierOf(y)
         || (/-latest$/.test(y) ? 1 : 0) - (/-latest$/.test(x) ? 1 : 0)   // "-latest" points at Google's newest stable one
         || verOf(y) - verOf(x)
@@ -543,7 +552,7 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
         || x.length - y.length);
   }
   const M = { key: '', list: [] };
-  const noThink = {};   // models that refused the "think briefly" setting
+  const noThink = {};   // model|mode pairs that refused the thinking setting
   // a limited or busy model rests until it can be used again; kept on the phone so a restart doesn't retry it
   const rest = (() => { try { const o = JSON.parse(store.get('tl.rest') || '{}'), now = Date.now(); Object.keys(o).forEach((k) => { if (!(o[k] > now)) delete o[k]; }); return o; } catch (e) { return {}; } })();
   function restModel(model, ms){
@@ -570,22 +579,34 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
   }
   function modelOrder(){
     const now = Date.now(), pref = settings.model === 'auto' ? null : settings.model;
-    return [pref, ...M.list].filter((m, i, a) => m && a.indexOf(m) === i && !(rest[m] > now));
+    let list = M.list;
+    if (settings.mode === 'accurate') {
+      // Flash, then Flash-Lite (the sort keeps newest first within each); a "-latest" name is left out when
+      // the versioned models are listed, so two "different" models are never the same one twice
+      list = list
+        .filter((m) => !/-latest$/.test(m) || !list.some((n) => tierOf(n) === tierOf(m) && verOf(n) > 0))
+        .sort((x, y) => tierOf(y) - tierOf(x));
+    }
+    return [pref, ...list].filter((m, i, a) => m && a.indexOf(m) === i && !(rest[m] > now));
   }
 
-  // answers come quicker with little or no thinking: Gemini 3 takes a level, 2.5 a token budget (Pro can't go to 0)
+  // "fast": little or no thinking; "accurate": let the model think it through.
+  // Gemini 3 takes a level, 2.5 a token budget (Pro can't go to 0; -1 = as much as it needs)
   function thinking(model){
+    if (settings.mode === 'accurate') return verOf(model) >= 3 ? { thinkingLevel: 'high' } : { thinkingBudget: -1 };
     if (verOf(model) >= 3) return { thinkingLevel: 'low' };
     return { thinkingBudget: /pro/.test(model) ? 128 : 0 };
   }
 
   // one model: { data, model } when it answered, null when it is limited / busy (it rests) or another model won,
   // throws on key or network problems
-  async function tryModel(model, image, signal){
-    for (let think = !noThink[model]; ; think = false) {
+  async function tryModel(model, image, signal, prompt){
+    const tk = model + '|' + settings.mode;
+    for (let think = !noThink[tk]; ; think = false) {
       if (signal.aborted) return null;
       let timedOut = false;
-      const ctl = new AbortController(), timer = setTimeout(() => { timedOut = true; ctl.abort(); }, 12000);
+      const wait = settings.mode === 'accurate' ? 45000 : 12000;   // thinking it through takes longer
+      const ctl = new AbortController(), timer = setTimeout(() => { timedOut = true; ctl.abort(); }, wait);
       const lost = () => ctl.abort();
       signal.addEventListener('abort', lost);
       let res, data;
@@ -594,7 +615,7 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-goog-api-key': settings.key },
           body: JSON.stringify({
-            contents: [{ role: 'user', parts: [ { text: PROMPT }, { inline_data: { mime_type: 'image/jpeg', data: image } } ] }],
+            contents: [{ role: 'user', parts: [ { text: prompt || PROMPT }, { inline_data: { mime_type: 'image/jpeg', data: image } } ] }],
             generationConfig: Object.assign({ temperature: 0.2, responseMimeType: 'application/json' }, think ? { thinkingConfig: thinking(model) } : {})
           }),
           signal: ctl.signal
@@ -613,7 +634,7 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
       if (res.ok) return { data, model };
       const msg = (data.error && data.error.message) || '';
       if (keyRejected(res.status, msg)) throw new KeyError(msg);
-      if (res.status === 400 && think) { noThink[model] = true; continue; }
+      if (res.status === 400 && think) { noThink[tk] = true; continue; }
       if (res.status === 429) {
         // "limit: 0" = not free for this key at all; a daily limit = rest for hours; otherwise Google says how long
         const info = JSON.stringify(data.error || {}), wait = retrySeconds(data) * 1000;
@@ -632,8 +653,55 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
     return parseJson(parts.filter((p) => !p.thought).map((p) => p.text || '').join(''));
   };
 
-  // several models get the same photo at once, fastest first; the first real answer wins and the others are cancelled.
-  // A model that is limited or busy is replaced by the next one in line, so `settings.par` stay in the race.
+  // ---------- "accurate": two of the smartest models answer on their own; if they disagree, a third decides ----------
+  const short = (m) => m.replace(/^gemini-/, '');
+  const optionOf = (o) => (String(o.option || '').trim().match(/^[A-Za-z0-9]\b/) || [''])[0].toUpperCase();
+  function agree(a, b){
+    if (optionOf(a) && optionOf(b)) return optionOf(a) === optionOf(b);
+    const x = norm(a.answer), y = norm(b.answer);
+    return x === y || (x.length > 2 && y.includes(x)) || (y.length > 2 && x.includes(y));
+  }
+  // the next model in line that gives an answer; limited / busy ones are skipped (they rest)
+  async function nextAnswer(queue, image, prompt){
+    const never = new AbortController().signal;
+    while (queue.length && S.running) {
+      const model = queue.shift();
+      const hit = await tryModel(model, image, never, prompt);
+      const out = hit && readOut(hit.data);
+      if (out) return { out, model };
+    }
+    return null;
+  }
+  const hasAnswer = (r) => !!(r && r.out.has_question && r.out.answer);
+
+  async function consensus(order, image){
+    const queue = order.slice();   // shared: each model is used once per question
+    setStatus('busy', 'Thinking it through');
+    const [a, b] = await Promise.all([nextAnswer(queue, image), nextAnswer(queue, image)]);
+    if (!hasAnswer(a) || !hasAnswer(b)) {
+      // only one model could answer (the others are limited), or one saw no question: go with what there is
+      const one = hasAnswer(a) ? a : hasAnswer(b) ? b : null;
+      if (!one) return (a || b) ? { out: (a || b).out, label: '' } : null;
+      const other = one === a ? b : a;
+      return { out: one.out, label: 'by ' + short(one.model) + (other ? ' · the other model couldn’t read a question' : ' only · no second model free to check') };
+    }
+    if (agree(a.out, b.out)) {
+      return { out: a.out, label: '2 models agree · ' + short(a.model) + ' + ' + short(b.model) };
+    }
+    setStatus('busy', 'Models disagree, asking a third');
+    const c = await nextAnswer(queue, image, judgePrompt(a.out, b.out));
+    if (hasAnswer(c)) {
+      const sides = agree(c.out, a.out) ? short(a.model) : agree(c.out, b.out) ? short(b.model) : 'neither';
+      return { out: c.out, label: 'Models disagreed · ' + short(c.model) + ' decided (sided with ' + sides + ')' };
+    }
+    // nobody left to decide: show the smarter model's answer, mark it unsure and name the other one
+    const out = Object.assign({}, a.out, { confidence: 'low', explanation: (a.out.explanation ? a.out.explanation + ' ' : '') + 'Other model said: ' + b.out.answer + '.' });
+    return { out, label: 'Models disagree · ' + short(a.model) + ' vs ' + short(b.model) };
+  }
+
+  // ---------- "fast": two models get the same photo at once, fastest first; the first real answer wins ----------
+  // A model that is limited or busy is replaced by the next one in line, so two stay in the race.
+  const FAST_PAR = 2;
   function race(order, image){
     return new Promise((resolve, reject) => {
       const stopAll = new AbortController();
@@ -645,7 +713,7 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
       };
       const settle = () => { if (!pending) netErr && !answered ? finish(null, netErr) : finish(answered); };   // nobody left racing
       const launch = () => {
-        while (!done && S.running && pending < settings.par && idx < order.length) {
+        while (!done && S.running && pending < FAST_PAR && idx < order.length) {
           const model = order[idx++];
           pending++;
           tryModel(model, image, stopAll.signal).then((hit) => {
@@ -653,8 +721,8 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
             if (done) return;
             if (hit) {
               const out = readOut(hit.data);
-              if (out && out.has_question && out.answer) return finish({ out, model: hit.model });
-              answered = answered || { out, model: hit.model };   // it saw no question: wait for the others
+              if (out && out.has_question && out.answer) return finish({ out, label: 'by ' + short(hit.model) });
+              answered = answered || { out, label: '' };   // it saw no question: wait for the others
             } else {
               launch();                                          // limited / busy: the next model takes its place
             }
@@ -680,8 +748,9 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
     try {
       await loadModels();
       const order = modelOrder();
-      setStatus('busy', settings.par > 1 && order.length > 1 ? 'Asking ' + Math.min(settings.par, order.length) + ' models at once' : 'Reading the question');
-      const hit = order.length ? await race(order, image) : null;
+      let hit = null;
+      if (order.length && settings.mode === 'accurate') hit = await consensus(order, image);
+      else if (order.length) { setStatus('busy', 'Reading the question'); hit = await race(order, image); }
       if (!S.running) return;
 
       if (!hit) {
@@ -701,7 +770,7 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
       const key = norm(out.question);
       if (key && key === S.lastQuestion) { setStatus('live', 'Same question'); return; }
       S.lastQuestion = key;
-      showAnswer(out, hit.model);
+      showAnswer(out, hit.label);
       setStatus('live', 'Watching for the next question');
     } catch (e) {
       if (e instanceof KeyError) {
@@ -715,17 +784,17 @@ h2{ margin:0; font-size:1.9rem; line-height:1.05; font-weight:800; letter-spacin
     }
   }
 
-  function showAnswer(out, model){
+  function showAnswer(out, label){
     el.q.textContent = out.question || '';
     el.a.textContent = out.answer;
     el.why.textContent = out.explanation || '';
     const c = String(out.confidence || '').toLowerCase();
     el.conf.hidden = !c;
     el.conf.textContent = confLabel(c);
-    el.by.textContent = model ? 'by ' + model : '';
+    el.by.textContent = label || '';
     el.next.hidden = false;
     el.card.hidden = false;
-    addToHistory(out, model);
+    addToHistory(out, label);
     el.card.classList.remove('fresh'); void el.card.offsetWidth; el.card.classList.add('fresh');
     speak(String(out.answer) + (c === 'low' ? '. Not sure about this one.' : ''));
   }
